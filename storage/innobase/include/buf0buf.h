@@ -698,11 +698,14 @@ buf_page_is_corrupted(
 Check if page is maybe compressed, encrypted or both when we encounter
 corrupted page. Note that we can't be 100% sure if page is corrupted
 or decrypt/decompress just failed.
-@param[in]	bpage		Page
+@param[in,out]	bpage		Pointer to block
+@param[out]	encrypted	True if page is encrypted
 @return true if page corrupted, false if not */
+UNIV_INTERN
 bool
 buf_page_check_corrupt(
-	buf_page_t*	bpage)	/*!< in/out: buffer page read from disk */
+	buf_page_t*	bpage,
+	bool*		encrypted)
 	MY_ATTRIBUTE(( warn_unused_result));
 
 /********************************************************************//**
@@ -1255,14 +1258,18 @@ buf_page_init_for_read(
 /********************************************************************//**
 Completes an asynchronous read or write request of a file page to or from
 the buffer pool.
+@param[in,out]	bpage		pointer to the block in question
+@param[in]	evict		true if evict the page from LRU list
+@param[out]	encrypted	true if page encrypted
 @return true if successful */
 UNIV_INTERN
 bool
 buf_page_io_complete(
 /*=================*/
-	buf_page_t*	bpage,	/*!< in: pointer to the block in question */
-	bool		evict = false);/*!< in: whether or not to evict
-				the page from LRU list. */
+	buf_page_t*	bpage,
+	bool		evict,
+	bool*		encrypted);
+
 /********************************************************************//**
 Calculates a folded value of a file page address to use in the page hash
 table.

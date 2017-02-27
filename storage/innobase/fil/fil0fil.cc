@@ -6192,8 +6192,9 @@ fil_aio_wait(
 	open, and use a special i/o thread to serve insert buffer requests. */
 
 	if (fil_node->space->purpose == FIL_TABLESPACE) {
+		bool encrypted = false;
 		srv_set_io_thread_op_info(segment, "complete io for buf page");
-		buf_page_io_complete(static_cast<buf_page_t*>(message));
+		buf_page_io_complete(static_cast<buf_page_t*>(message), false, &encrypted);
 	} else {
 		srv_set_io_thread_op_info(segment, "complete io for log");
 		log_io_complete(static_cast<log_group_t*>(message));

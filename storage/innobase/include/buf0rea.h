@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1995, 2013, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2015, MariaDB Corporation.
+Copyright (c) 2015, 2017, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -35,15 +35,19 @@ High-level function which reads a page asynchronously from a file to the
 buffer buf_pool if it is not already there. Sets the io_fix flag and sets
 an exclusive lock on the buffer frame. The flag is cleared and the x-lock
 released by the i/o-handler thread.
-@return TRUE if page has been read in, FALSE in case of failure */
+@param[in]	space		space_id
+@param[in]	zip_size	compressed page size in bytes, or 0
+@param[in]	offset		page number
+@param[out]	encrypted	true if page encrypted
+@return true if page has been read in, false in case of failure */
 UNIV_INTERN
-ibool
+bool
 buf_read_page(
-/*==========*/
-	ulint	space,	/*!< in: space id */
-	ulint	zip_size,/*!< in: compressed page size in bytes, or 0 */
-	ulint	offset, /*!< in: page number */
-	buf_page_t** bpage);/*!< out: page */
+	ulint	space,
+	ulint	zip_size,
+	ulint	offset,
+	bool*	encrypted);
+
 /********************************************************************//**
 High-level function which reads a page asynchronously from a file to the
 buffer buf_pool if it is not already there. Sets the io_fix flag and sets

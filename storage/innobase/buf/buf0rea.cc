@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1995, 2013, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2015. MariaDB Corporation.
+Copyright (c) 2015, 2017, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -100,28 +100,36 @@ flag is cleared and the x-lock released by an i/o-handler thread.
 in buf_pool, or if the page is in the doublewrite buffer blocks in
 which case it is never read into the pool, or if the tablespace does
 not exist or is being dropped
+@param[out]	err	 	DB_SUCCESS or DB_TABLESPACE_DELETED if we are
+				trying to read from a non-existent tablespace, or a
+				tablespace which is just now being dropped
+@param[in]	sync		true if synchronous aio is desired
+@param[in]	mode		BUF_READ_IBUF_PAGES_ONLY, ...,
+				ORed to OS_AIO_SIMULATED_WAKE_LATER (see below
+				at read-ahead functions)
+@param[in]	space		space id
+@param[in]	zip_size	compressed page size, or 0
+@param[in]	unzip		TRUE=request uncompressed page
+@param[in]	tablespae_version	if the space memory object has
+				this timestamp different from what we are giving here,
+				treat the tablespace as dropped; this is a timestamp we
+				use to stop dangling page reads from a tablespace
+				which we have DISCARDed + IMPORTed back
+@param[in]	offset		page number
+@param[out]	encrypted	true if page is encrypted
 @return 1 if read request is issued. 0 if it is not */
 static
 ulint
 buf_read_page_low(
-/*==============*/
-	dberr_t*	err,	/*!< out: DB_SUCCESS or DB_TABLESPACE_DELETED if we are
-				trying to read from a non-existent tablespace, or a
-				tablespace which is just now being dropped */
-	bool		sync,	/*!< in: true if synchronous aio is desired */
-	ulint		mode,	/*!< in: BUF_READ_IBUF_PAGES_ONLY, ...,
-				ORed to OS_AIO_SIMULATED_WAKE_LATER (see below
-				at read-ahead functions) */
-	ulint		space,	/*!< in: space id */
-	ulint		zip_size,/*!< in: compressed page size, or 0 */
-	ibool		unzip,	/*!< in: TRUE=request uncompressed page */
-	ib_int64_t 	tablespace_version, /*!< in: if the space memory object has
-					    this timestamp different from what we are giving here,
-					    treat the tablespace as dropped; this is a timestamp we
-					    use to stop dangling page reads from a tablespace
-					    which we have DISCARDed + IMPORTed back */
-	ulint		offset,	/*!< in: page number */
-	buf_page_t** 	rbpage) /*!< out: page */
+	dberr_t*	err,
+	bool		sync,
+	ulint		mode,
+	ulint		space,
+	ulint		zip_size,
+	ibool		unzip,
+	ib_int64_t	tablespace_version,
+	ulint		offset,
+	bool*		encrypted)
 {
 	buf_page_t*	bpage;
 	ulint		wake_later;
@@ -215,16 +223,9 @@ buf_read_page_low(
 	if (sync) {
 		/* The i/o is already completed when we arrive from
 		fil_read */
-		if (!buf_page_io_complete(bpage)) {
-			if (rbpage) {
-				*rbpage = bpage;
-			}
+		if (!buf_page_io_complete(bpage, false, encrypted)) {
 			return(0);
 		}
-	}
-
-	if (rbpage) {
-		*rbpage = bpage;
 	}
 
 	return(1);
@@ -353,20 +354,30 @@ read_ahead:
 		mode: hence FALSE as the first parameter */
 
 		if (!ibuf_bitmap_page(zip_size, i)) {
+			bool encrypted = false;
+
 			count += buf_read_page_low(
 				&err, false,
 				ibuf_mode | OS_AIO_SIMULATED_WAKE_LATER,
 				space, zip_size, FALSE,
-				tablespace_version, i, NULL);
+				tablespace_version, i, &encrypted);
+
 			if (err == DB_TABLESPACE_DELETED) {
-				ut_print_timestamp(stderr);
-				fprintf(stderr,
-					"  InnoDB: Warning: in random"
-					" readahead trying to access\n"
-					"InnoDB: tablespace %lu page %lu,\n"
-					"InnoDB: but the tablespace does not"
+				ib_logf(IB_LOG_LEVEL_WARN,
+					"In random"
+					"readahead trying to access"
+					"tablespace " ULINTPF " page " ULINTPF
+					" but the tablespace does not"
 					" exist or is just being dropped.\n",
-					(ulong) space, (ulong) i);
+					space, i);
+			}
+
+			if (encrypted) {
+				ib_logf(IB_LOG_LEVEL_ERROR,
+					"In random readahead read page " ULINTPF
+					" from tablespace " ULINTPF
+					" but page is still encrypted. ",
+					i, space);
 			}
 		}
 	}
@@ -400,19 +411,24 @@ High-level function which reads a page asynchronously from a file to the
 buffer buf_pool if it is not already there. Sets the io_fix flag and sets
 an exclusive lock on the buffer frame. The flag is cleared and the x-lock
 released by the i/o-handler thread.
-@return TRUE if page has been read in, FALSE in case of failure */
+@param[in]	space		space_id
+@param[in]	zip_size	compressed page size in bytes, or 0
+@param[in]	offset		page number
+@param[out]	encrypted	true if page encrypted
+@return true if page has been read in, false in case of failure */
 UNIV_INTERN
-ibool
+bool
 buf_read_page(
-/*==========*/
-	ulint	space,	/*!< in: space id */
-	ulint	zip_size,/*!< in: compressed page size in bytes, or 0 */
-	ulint	offset,	/*!< in: page number */
-	buf_page_t** bpage)	/*!< out: page */
+	ulint	space,
+	ulint	zip_size,
+	ulint	offset,
+	bool*	encrypted)
 {
 	ib_int64_t	tablespace_version;
 	ulint		count;
 	dberr_t		err;
+
+	ut_ad(encrypted);
 
 	tablespace_version = fil_space_get_version(space);
 
@@ -421,8 +437,11 @@ buf_read_page(
 
 	count = buf_read_page_low(&err, true, BUF_READ_ANY_PAGE, space,
 				  zip_size, FALSE,
-				  tablespace_version, offset, bpage);
+				  tablespace_version, offset,
+				  encrypted);
+
 	srv_stats.buf_pool_reads.add(count);
+
 	if (err == DB_TABLESPACE_DELETED) {
 		ut_print_timestamp(stderr);
 		fprintf(stderr,
@@ -465,11 +484,23 @@ buf_read_page_async(
 
 	tablespace_version = fil_space_get_version(space);
 
+	bool encrypted = false;
+
 	count = buf_read_page_low(&err, true, BUF_READ_ANY_PAGE
 				  | OS_AIO_SIMULATED_WAKE_LATER
 				  | BUF_READ_IGNORE_NONEXISTENT_PAGES,
 				  space, zip_size, FALSE,
-				  tablespace_version, offset, NULL);
+				 tablespace_version, offset, &encrypted);
+
+	if (encrypted) {
+		ib_logf(IB_LOG_LEVEL_WARN,
+			"In async page read "
+			"trying to access"
+			"tablespace " ULINTPF " page " ULINTPF
+			" but page is still encryted.",
+			space, offset);
+	}
+
 	srv_stats.buf_pool_reads.add(count);
 
 	/* We do not increment number of I/O operations used for LRU policy

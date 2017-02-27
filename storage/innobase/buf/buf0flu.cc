@@ -956,7 +956,15 @@ buf_flush_write_block_low(
 
 		/* true means we want to evict this page from the
 		LRU list as well. */
-		buf_page_io_complete(bpage, true);
+		bool encrypted = false;
+		buf_page_io_complete(bpage, true, &encrypted);
+
+		if (encrypted) {
+			ib_logf(IB_LOG_LEVEL_ERROR,
+				"Page encrypted while evicting a page"
+				ULINTPF " from space " ULINTPF " from LRU.",
+				bpage->offset, bpage->space);
+		}
 	}
 
 	/* Increment the counter of I/O operations used
